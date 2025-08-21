@@ -1,0 +1,56 @@
+-- Stores user profiles and basic information.
+CREATE TABLE users (
+    user_id VARCHAR(255) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    weight_kg DECIMAL(5, 2)
+);
+
+-- Represents the many-to-many friendship connections.
+CREATE TABLE friends (
+    user_id_1 VARCHAR(255) REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id_2 VARCHAR(255) REFERENCES users(user_id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id_1, user_id_2),
+    CONSTRAINT check_users CHECK (user_id_1 < user_id_2) -- Prevents duplicate pairs
+);
+
+-- Stores high-level information for each workout session.
+CREATE TABLE workouts (
+    workout_id VARCHAR(255) PRIMARY KEY,
+    user_id VARCHAR(255) REFERENCES users(user_id) ON DELETE CASCADE,
+    workout_date DATE NOT NULL,
+    duration_minutes INT NOT NULL
+);
+
+-- Stores details for each exercise performed within a workout.
+CREATE TABLE exercises (
+    exercise_id VARCHAR(255) PRIMARY KEY,
+    workout_id VARCHAR(255) REFERENCES workouts(workout_id) ON DELETE CASCADE,
+    exercise_name VARCHAR(255) NOT NULL,
+    sets INT NOT NULL,
+    reps INT NOT NULL,
+    weight_kg DECIMAL(6, 2)
+);
+
+-- Stores personal fitness goals set by the user.
+CREATE TABLE goals (
+    goal_id VARCHAR(255) PRIMARY KEY,
+    user_id VARCHAR(255) REFERENCES users(user_id) ON DELETE CASCADE,
+    goal_type VARCHAR(50) NOT NULL, -- e.g., 'workouts_per_week'
+    target_value INT NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL
+);
+
+-- Add some sample users for demonstration
+INSERT INTO users (user_id, name, email, weight_kg) VALUES
+('user1', 'Alex Ryder', 'alex@example.com', 75.5),
+('user2', 'Ben Carter', 'ben@example.com', 82.0),
+('user3', 'Chloe Davis', 'chloe@example.com', 65.0),
+('user4', 'Diana Prince', 'diana@example.com', 68.5);
+
+-- Make them friends for the leaderboard
+INSERT INTO friends (user_id_1, user_id_2) VALUES
+('user1', 'user2'),
+('user1', 'user3'),
+('user1', 'user4');
