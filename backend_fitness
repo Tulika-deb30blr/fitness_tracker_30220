@@ -1,0 +1,161 @@
+# backend_fitness.py
+
+import psycopg2
+import uuid
+import os
+from dotenv import load_dotenv
+from datetime import date
+
+load_dotenv()
+
+class FitnessDB:
+    """ Backend class for the Personal Fitness Tracker. """
+
+    def __init__(self):
+        """ Initializes database connection. """
+        try:
+            self.conn = psycopg2.connect(
+                dbname=os.getenv("tracker"),
+                user=os.getenv("postgres"),
+                password=os.getenv("Tulika30@xime"),
+                host=os.getenv("localhos"),
+                port=os.getenv("5432")
+            )
+            self.cur = self.conn.cursor()
+        except psycopg2.OperationalError as e:
+            raise Exception(f"Database connection failed: {e}")
+
+    # --- User & Friends Management ---
+    def get_all_users(self):
+        self.cur.execute("SELECT user_id, name FROM users ORDER BY name;")
+        return self.cur.fetchall()
+
+    def get_user_profile(self, user_id):
+        self.cur.execute("SELECT name, email, weight_kg FROM users WHERE user_id = %s;", (user_id,))
+        return self.cur.fetchone()
+
+    def update_user_profile(self, user_id, name, email, weight):
+        query = "UPDATE users SET name = %s, email = %s, weight_kg = %s WHERE user_id = %s;"
+        self.cur.execute(query, (name, email, weight, user_id))
+        self.conn.commit()
+
+    def get_user_friends(self, user_id):
+        query = """
+        SELECT u.user_id, u.name FROM users u JOIN friends f ON u.user_id = f.user_id_2 WHERE f.user_id_1 = %s
+        UNION
+        SELECT u.user_id, u.name FROM users u JOIN friends f ON u.user_id = f.user_id_1 WHERE f.user_id_2 = %s;
+        """
+        self.cur.execute(query, (user_id, user_id))
+        return self.cur.fetchall()
+
+    def add_friend(self, user_id_1, user_id_2):
+        # Ensure consistent order to match CHECK constraint
+        if user_id_1 > user_id_2:
+            user_id_1, user_id_2 = user_id_2, user_id_1
+        try:
+            self.cur.execute("INSERT INTO friends (user_id_1, user_id_2) VALUES (%s, %s);", (user_id_1, user_id_2))
+            self.conn.commit()
+        except psycopg2.errors.UniqueViolation:
+            self.conn.rollback() # Friendship already exists
+
+    # --- Workout & Exercise Management (CRUD) ---
+    def log_workout(self, user_id, workout_date, duration, exercises):
+        """ CREATE: Logs a new workout and its associated exercises in a single transaction. """
+        workout_id = str(uuid.uuid4())
+        try:
+            # Insert parent workout record
+            workout_query = "INSERT INTO workouts (workout_id, user_id, workout_date, duration_minutes) VALUES (%s, %s, %s, %s);"
+            self.cur.execute(workout_query, (workout_id, user_id, workout_date, duration))
+
+            # Insert child exercise records
+            for ex in exercises:
+                exercise_id = str(uuid.uuid4())
+                ex_query = "INSERT INTO exercises (exercise_id, workout_id, exercise_name, sets, reps, weight_kg) VALUES (%s, %s, %s, %s, %s, %s);"
+                self.cur.execute(ex_query, (exercise_id, workout_id, ex['name'], ex['sets'], ex['reps'], ex['weight']))
+
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            raise e
+
+    def get_workout_history(self, user_id):
+        """ READ: Retrieves a user's complete workout history. """
+        query = """
+        SELECT w.workout_date, w.duration_minutes, e.exercise_name, e.sets, e.reps, e.weight_kg
+        FROM workouts w
+        JOIN exercises e ON w.workout_id = e.workout_id
+        WHERE w.user_id = %s
+        ORDER BY w.workout_date DESC, e.exercise_name;
+        """
+        self.cur.execute(query, (user_id,))
+        return self.cur.fetchall()
+
+    # --- Goal Management ---
+    def set_goal(self, user_id, goal_type, target_value, start_date, end_date):
+        goal_id = str(uuid.uuid4())
+        query = "INSERT INTO goals (goal_id, user_id, goal_type, target_value, start_date, end_date) VALUES (%s, %s, %s, %s, %s, %s);"
+        self.cur.execute(query, (goal_id, user_id, goal_type, target_value, start_date, end_date))
+        self.conn.commit()
+
+    def get_active_goal(self, user_id):
+        today = date.today()
+        query = "SELECT goal_type, target_value FROM goals WHERE user_id = %s AND start_date <= %s AND end_date >= %s LIMIT 1;"
+        self.cur.execute(query, (user_id, today, today))
+        return self.cur.fetchone()
+
+    # --- INSIGHTS & LEADERBOARD ---
+    def get_user_stats(self, user_id):
+        """ Generates key fitness statistics for the dashboard. """
+        # COUNT: Total workouts
+        self.cur.execute("SELECT COUNT(*) FROM workouts WHERE user_id = %s;", (user_id,))
+        total_workouts = self.cur.fetchone()[0]
+
+        # SUM: Total workout minutes
+        self.cur.execute("SELECT SUM(duration_minutes) FROM workouts WHERE user_id = %s;", (user_id,))
+        total_minutes = self.cur.fetchone()[0] or 0
+
+        # AVG: Average workout duration
+        self.cur.execute("SELECT AVG(duration_minutes) FROM workouts WHERE user_id = %s;", (user_id,))
+        avg_duration = self.cur.fetchone()[0] or 0
+
+        # MAX: Personal best lift for a common exercise (e.g., Bench Press)
+        self.cur.execute("SELECT MAX(weight_kg) FROM exercises e JOIN workouts w ON e.workout_id = w.workout_id WHERE w.user_id = %s AND e.exercise_name = 'Bench Press';", (user_id,))
+        max_bench = self.cur.fetchone()[0] or 0
+
+        return {
+            'total_workouts': total_workouts,
+            'total_minutes': total_minutes,
+            'avg_duration': avg_duration,
+            'max_bench': max_bench
+        }
+
+    def get_weekly_progress(self, user_id):
+        """ Calculates workouts completed in the current week for goal tracking. """
+        query = """
+        SELECT COUNT(*) FROM workouts
+        WHERE user_id = %s AND workout_date >= date_trunc('week', CURRENT_DATE);
+        """
+        self.cur.execute(query, (user_id,))
+        return self.cur.fetchone()[0]
+
+    def get_leaderboard(self, user_id):
+        """ Ranks the user and their friends by total workout minutes this week. """
+        query = """
+        SELECT u.name, COALESCE(SUM(w.duration_minutes), 0) as total_minutes
+        FROM users u
+        LEFT JOIN workouts w ON u.user_id = w.user_id
+            AND w.workout_date >= date_trunc('week', CURRENT_DATE)
+        WHERE u.user_id = %s OR u.user_id IN (
+            SELECT user_id_2 FROM friends WHERE user_id_1 = %s
+            UNION
+            SELECT user_id_1 FROM friends WHERE user_id_2 = %s
+        )
+        GROUP BY u.user_id, u.name
+        ORDER BY total_minutes DESC;
+        """
+        self.cur.execute(query, (user_id, user_id, user_id))
+        return self.cur.fetchall()
+
+    def __del__(self):
+        if hasattr(self, 'cur'): self.cur.close()
+        if hasattr(self, 'conn'): self.conn.close()
