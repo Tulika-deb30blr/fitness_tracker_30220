@@ -1,0 +1,132 @@
+# frontend_fitness.py
+
+import streamlit as st
+import pandas as pd
+from backend_fitness import FitnessDB
+from datetime import date, timedelta
+
+# --- App Configuration ---
+st.set_page_config(page_title="Personal Fitness Tracker", layout="wide", initial_sidebar_state="expanded")
+
+# --- Database Initialization & User Selection ---
+try:
+    db = FitnessDB()
+except Exception as e:
+    st.error(f"Failed to connect to the database: {e}")
+    st.stop()
+
+st.sidebar.title("🏃‍♂️ Fitness Tracker")
+all_users = db.get_all_users()
+user_dict = {name: uid for uid, name in all_users}
+selected_user_name = st.sidebar.selectbox("Select User Profile", options=user_dict.keys())
+CURRENT_USER_ID = user_dict[selected_user_name]
+
+page = st.sidebar.radio("Navigate", ["Dashboard", "Log Workout", "Workout History", "Goals", "Friends & Leaderboard", "Profile"])
+
+# --- Page Routing ---
+
+if page == "Dashboard":
+    st.header(f"🏆 Welcome back, {selected_user_name}!")
+    stats = db.get_user_stats(CURRENT_USER_ID)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Workouts", f"{stats['total_workouts']}", help="COUNT of all your workout sessions.")
+    c2.metric("Total Minutes", f"{stats['total_minutes']}", help="SUM of all workout durations.")
+    c3.metric("Avg. Duration (min)", f"{stats['avg_duration']:.1f}", help="AVG duration of your sessions.")
+    c4.metric("Best Bench Press (kg)", f"{stats['max_bench']}", help="MAX weight lifted for Bench Press.")
+
+    st.subheader("Weekly Goal Progress")
+    goal = db.get_active_goal(CURRENT_USER_ID)
+    if goal:
+        goal_type, target = goal
+        progress = db.get_weekly_progress(CURRENT_USER_ID)
+        st.progress(progress / target, text=f"Workouts this week: {progress} / {target}")
+    else:
+        st.info("You have no active goals. Go to the 'Goals' page to set one!")
+
+elif page == "Log Workout":
+    st.header("✍️ Log a New Workout")
+    with st.form("log_workout_form", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        workout_date = c1.date_input("Date", date.today())
+        duration = c2.number_input("Duration (minutes)", min_value=1)
+        st.markdown("---")
+        st.subheader("Exercises")
+        num_exercises = st.number_input("Number of Exercises", min_value=1, value=2)
+        exercises = []
+        for i in range(num_exercises):
+            st.markdown(f"**Exercise {i+1}**")
+            cols = st.columns(4)
+            ex_name = cols[0].text_input("Name", key=f"name_{i}")
+            ex_sets = cols[1].number_input("Sets", min_value=1, key=f"sets_{i}")
+            ex_reps = cols[2].number_input("Reps", min_value=1, key=f"reps_{i}")
+            ex_weight = cols[3].number_input("Weight (kg)", min_value=0.0, format="%.2f", key=f"weight_{i}")
+            exercises.append({'name': ex_name, 'sets': ex_sets, 'reps': ex_reps, 'weight': ex_weight})
+
+        if st.form_submit_button("Save Workout"):
+            db.log_workout(CURRENT_USER_ID, workout_date, duration, exercises)
+            st.success("Workout logged successfully!")
+
+elif page == "Workout History":
+    st.header("📜 My Workout History")
+    history = db.get_workout_history(CURRENT_USER_ID)
+    if history:
+        df = pd.DataFrame(history, columns=["Date", "Duration", "Exercise", "Sets", "Reps", "Weight (kg)"])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No workout history found. Time to hit the gym!")
+
+elif page == "Goals":
+    st.header("🎯 Set & View Goals")
+    st.subheader("Set a New Goal")
+    with st.form("goal_form", clear_on_submit=True):
+        target = st.number_input("How many workouts per week?", min_value=1, value=3)
+        if st.form_submit_button("Set Weekly Goal"):
+            today = date.today()
+            end_date = today + timedelta(days=6 - today.weekday()) # End of current week
+            db.set_goal(CURRENT_USER_ID, 'workouts_per_week', target, today, end_date)
+            st.success("New weekly goal has been set!")
+
+    st.subheader("Current Goal")
+    active_goal = db.get_active_goal(CURRENT_USER_ID)
+    if active_goal:
+        st.info(f"Your current goal is **{active_goal[1]}** workouts per week.")
+    else:
+        st.warning("No active goal set for the current period.")
+
+elif page == "Friends & Leaderboard":
+    st.header("🤝 Friends & Leaderboard")
+    st.subheader("This Week's Leaderboard (Total Workout Minutes)")
+    leaderboard_data = db.get_leaderboard(CURRENT_USER_ID)
+    if leaderboard_data:
+        df_leaderboard = pd.DataFrame(leaderboard_data, columns=["Name", "Total Minutes"])
+        df_leaderboard.index = df_leaderboard.index + 1 # Rank
+        st.dataframe(df_leaderboard, use_container_width=True)
+    else:
+        st.info("No data for the leaderboard yet this week.")
+
+    st.subheader("Manage Friends")
+    friends = db.get_user_friends(CURRENT_USER_ID)
+    st.write("**Your Friends:**", ", ".join([f[1] for f in friends]) or "None")
+
+    # Friend Adder
+    friend_ids = [f[0] for f in friends]
+    potential_friends = {name: uid for uid, name in all_users if uid not in friend_ids and uid != CURRENT_USER_ID}
+    if potential_friends:
+        friend_to_add_name = st.selectbox("Add a friend:", options=potential_friends.keys())
+        if st.button("Add Friend"):
+            friend_to_add_id = potential_friends[friend_to_add_name]
+            db.add_friend(CURRENT_USER_ID, friend_to_add_id)
+            st.success(f"{friend_to_add_name} has been added as a friend!")
+            st.rerun()
+
+elif page == "Profile":
+    st.header("👤 My Profile")
+    profile_data = db.get_user_profile(CURRENT_USER_ID)
+    with st.form("profile_form"):
+        name = st.text_input("Name", value=profile_data[0])
+        email = st.text_input("Email", value=profile_data[1])
+        weight = st.number_input("Weight (kg)", value=float(profile_data[2]), format="%.2f")
+        if st.form_submit_button("Update Profile"):
+            db.update_user_profile(CURRENT_USER_ID, name, email, weight)
+            st.success("Profile updated successfully!")
